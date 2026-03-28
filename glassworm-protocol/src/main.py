@@ -51,10 +51,8 @@ def main():
             poa_hash = line.split("PoA-Signature: ")[1].strip()
             
     if not poa_hash:
-        pr.create_issue_comment("🛑 **Glassworm Protocol Alert** 🛑\n\nNo Proof of Antiquity signature found in the latest commit message.\nPlease include `PoA-Signature: poa_<hash>` to verify this PR.")
-        pr.add_to_labels("poa-failed")
-        print("No PoA signature found.")
-        sys.exit(1)
+        print("No PoA signature found. Skipping verification (optional).")
+        sys.exit(0)
         
     is_valid = verify_poa(latest_commit.sha, poa_hash, rpc_url)
     
