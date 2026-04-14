@@ -8,6 +8,7 @@ import sqlite3
 import json
 import time
 import hashlib
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
@@ -29,10 +30,13 @@ class UTXODatabase:
 
     def __init__(self, db_path: str = "utxo.db") -> None:
         self.db_path = db_path
+        self._lock = threading.RLock()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -91,14 +95,15 @@ class UTXODatabase:
 
     def spend_utxo(self, tx_hash: str, index: int, spent_tx_hash: str) -> bool:
         """Mark a UTXO as spent."""
-        conn = self._connect()
-        cur = conn.execute(
-            "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ? AND spent = 0",
-            (spent_tx_hash, tx_hash, index),
-        )
-        conn.commit()
-        conn.close()
-        return cur.rowcount > 0
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ? AND spent = 0",
+                (spent_tx_hash, tx_hash, index),
+            )
+            conn.commit()
+            conn.close()
+            return cur.rowcount > 0
 
     def get_balance(self, owner: str) -> int:
         """Get total balance for an owner."""
@@ -120,67 +125,69 @@ class UTXODatabase:
         """Create a new transaction.
 
         FIXED: Validate amount and fee are positive.
+        FIXED: Use proper locking for atomic UTXO spend.
         """
         if amount <= 0:
             raise ValueError("Amount must be positive")
         if fee < 0:
             raise ValueError("Fee must be non-negative")
 
-        conn = self._connect()
+        with self._lock:
+            conn = self._connect()
 
-        available = conn.execute(
-            "SELECT * FROM utxo WHERE owner = ? AND spent = 0 ORDER BY amount DESC",
-            (from_owner,),
-        ).fetchall()
+            available = conn.execute(
+                "SELECT * FROM utxo WHERE owner = ? AND spent = 0 ORDER BY amount DESC",
+                (from_owner,),
+            ).fetchall()
 
-        total_available = sum(r["amount"] for r in available)
-        if total_available < amount + fee:
+            total_available = sum(r["amount"] for r in available)
+            if total_available < amount + fee:
+                conn.close()
+                raise ValueError("Insufficient funds")
+
+            inputs = []
+            input_sum = 0
+            for row in available:
+                if input_sum >= amount + fee:
+                    break
+                inputs.append({
+                    "tx_hash": row["tx_hash"],
+                    "index": row["indexnum"],
+                    "amount": row["amount"],
+                })
+                input_sum += row["amount"]
+
+            outputs = [{"owner": to_owner, "amount": amount}]
+            change = input_sum - amount - fee
+            if change > 0:
+                outputs.append({"owner": from_owner, "amount": change})
+            elif change < 0:
+                conn.close()
+                raise ValueError("Insufficient funds")
+
+            tx_data = {
+                "inputs": inputs,
+                "outputs": outputs,
+                "timestamp": int(time.time()),
+            }
+            tx_hash = hashlib.sha256(json.dumps(tx_data).encode()).hexdigest()
+
+            for inp in inputs:
+                conn.execute(
+                    "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ? AND spent = 0",
+                    (tx_hash, inp["tx_hash"], inp["index"]),
+                )
+
+            conn.commit()
             conn.close()
-            raise ValueError("Insufficient funds")
 
-        inputs = []
-        input_sum = 0
-        for row in available:
-            if input_sum >= amount + fee:
-                break
-            inputs.append({
-                "tx_hash": row["tx_hash"],
-                "index": row["indexnum"],
-                "amount": row["amount"],
-            })
-            input_sum += row["amount"]
-
-        outputs = [{"owner": to_owner, "amount": amount}]
-        change = input_sum - amount - fee
-        if change > 0:
-            outputs.append({"owner": from_owner, "amount": change})
-        elif change < 0:
-            conn.close()
-            raise ValueError("Insufficient funds")
-
-        tx_data = {
-            "inputs": inputs,
-            "outputs": outputs,
-            "timestamp": int(time.time()),
-        }
-        tx_hash = hashlib.sha256(json.dumps(tx_data).encode()).hexdigest()
-
-        for inp in inputs:
-            conn.execute(
-                "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ?",
-                (tx_hash, inp["tx_hash"], inp["index"]),
-            )
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "tx_hash": tx_hash,
-            "inputs": inputs,
-            "outputs": outputs,
-            "fee": fee,
-            "timestamp": tx_data["timestamp"],
-        }
+            return {
+                "tx_hash": tx_hash,
+                "inputs": inputs,
+                "outputs": outputs,
+                "fee": fee,
+                "timestamp": tx_data["timestamp"],
+            }
 
     def add_transaction(
         self,
@@ -188,7 +195,10 @@ class UTXODatabase:
         inputs: List[Dict],
         outputs: List[Dict],
     ) -> None:
-        """Add a transaction and create new UTXOs."""
+        """Add a transaction and create new UTXOs.
+
+        FIXED: Use proper locking for atomicity.
+        """
         if not outputs:
             raise ValueError("Transaction must have at least one output")
 
@@ -207,22 +217,26 @@ class UTXODatabase:
             if tx_hash_in is None or index is None:
                 raise ValueError("Input tx_hash and index are required")
 
-        conn = self._connect()
+        with self._lock:
+            conn = self._connect()
 
-        for inp in inputs:
-            conn.execute(
-                "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ?",
-                (tx_hash, inp["tx_hash"], inp["index"]),
-            )
+            for inp in inputs:
+                cur = conn.execute(
+                    "UPDATE utxo SET spent = 1, spent_by = ? WHERE tx_hash = ? AND indexnum = ? AND spent = 0",
+                    (tx_hash, inp["tx_hash"], inp["index"]),
+                )
+                if cur.rowcount == 0:
+                    conn.close()
+                    raise ValueError(f"UTXO already spent: {inp['tx_hash']}:{inp['index']}")
 
-        for i, out in enumerate(outputs):
-            conn.execute(
-                "INSERT INTO utxo (tx_hash, indexnum, amount, owner, script_type, spent) VALUES (?, ?, ?, ?, 'pubkeyhash', 0)",
-                (tx_hash, i, out["amount"], out["owner"]),
-            )
+            for i, out in enumerate(outputs):
+                conn.execute(
+                    "INSERT INTO utxo (tx_hash, indexnum, amount, owner, script_type, spent) VALUES (?, ?, ?, ?, 'pubkeyhash', 0)",
+                    (tx_hash, i, out["amount"], out["owner"]),
+                )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
 
     def get_transaction(self, tx_hash: str) -> Optional[Dict]:
         """Get transaction details."""
