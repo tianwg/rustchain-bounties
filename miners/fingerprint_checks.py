@@ -273,19 +273,19 @@ def generate_fingerprint() -> Dict[str, Any]:
     boot_id = get_boot_id()
     machine_id = get_machine_id()
 
-    import random
+    import secrets
 
-    base_clock = 1000 + random.randint(-50, 50)
+    base_clock = 1000 + secrets.randbelow(101) - 50
     return {
         "boot_id": boot_id,
         "machine_id": machine_id,
         "cpu_info": cpu_info,
         "cpu_mhz": base_clock,
-        "l2_cache_latency_ns": random.uniform(10, 20),
-        "l3_cache_latency_ns": random.uniform(30, 50),
-        "clock_drift": random.uniform(-0.1, 0.1),
-        "age_hours": random.randint(1, 1000),
-        "cpu_temp_c": random.uniform(40, 70),
+        "l2_cache_latency_ns": 10 + secrets.randbelow(1001) / 100,
+        "l3_cache_latency_ns": 30 + secrets.randbelow(2001) / 100,
+        "clock_drift": (secrets.randbelow(2001) - 1000) / 10000,
+        "age_hours": 1 + secrets.randbelow(1000),
+        "cpu_temp_c": 40 + secrets.randbelow(3001) / 100,
         "timestamp": int(time.time()),
     }
 
