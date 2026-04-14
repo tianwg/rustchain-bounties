@@ -192,6 +192,21 @@ class UTXODatabase:
         if not outputs:
             raise ValueError("Transaction must have at least one output")
 
+        for out in outputs:
+            amount = out.get("amount")
+            if amount is None:
+                raise ValueError("Output amount is required")
+            if not isinstance(amount, int):
+                raise ValueError("Output amount must be an integer")
+            if amount <= 0:
+                raise ValueError("Output amount must be positive")
+
+        for inp in inputs:
+            tx_hash_in = inp.get("tx_hash")
+            index = inp.get("index")
+            if tx_hash_in is None or index is None:
+                raise ValueError("Input tx_hash and index are required")
+
         conn = self._connect()
 
         for inp in inputs:

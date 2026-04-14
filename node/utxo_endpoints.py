@@ -11,13 +11,44 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from typing import Any, Dict, List, Optional
 
+import time
+from threading import Lock
+
 from utxo_db import UTXODatabase, UTXO
+
+
+class RateLimiter:
+    """Simple rate limiter for endpoints."""
+
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: Dict[str, List[float]] = {}
+        self.lock = Lock()
+
+    def is_allowed(self, client_id: str) -> bool:
+        now = time.time()
+        with self.lock:
+            if client_id not in self.requests:
+                self.requests[client_id] = []
+
+            self.requests[client_id] = [
+                t for t in self.requests[client_id]
+                if now - t < self.window_seconds
+            ]
+
+            if len(self.requests[client_id]) >= self.max_requests:
+                return False
+
+            self.requests[client_id].append(now)
+            return True
 
 
 class UTXORequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for UTXO API endpoints."""
 
     db: UTXODatabase = None  # type: ignore
+    rate_limiter: RateLimiter = None  # type: ignore
 
     def log_message(self, format, *args):
         pass  # Suppress logging
@@ -97,10 +128,13 @@ class UTXORequestHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
 
     def handle_create_transaction(self):
-        """Create a new transaction.
+        """Create a new transaction."""
+        if self.rate_limiter:
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            if not self.rate_limiter.is_allowed(client_ip):
+                self.send_json(429, {"error": "rate limit exceeded"})
+                return
 
-        VULNERABLE: No authentication, no rate limiting, no double-spend protection.
-        """
         body = self.read_json_body()
         if not body:
             self.send_json(400, {"error": "invalid request body"})
@@ -167,10 +201,11 @@ class UTXORequestHandler(BaseHTTPRequestHandler):
         self.send_json(200, {"status": "ok"})
 
 
-def create_server(host: str = "0.0.0.0", port: int = 9000, db_path: str = "utxo.db"):
+def create_server(host: str = "0.0.0.0", port: int = 9000, db_path: str = "utxo.db", rate_limit: int = 100):
     """Create and configure the UTXO HTTP server."""
     db = UTXODatabase(db_path)
     UTXORequestHandler.db = db
+    UTXORequestHandler.rate_limiter = RateLimiter(max_requests=rate_limit)
 
     server = HTTPServer((host, port), UTXORequestHandler)
     return server
