@@ -147,6 +147,12 @@ class UTXORequestHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "tx_hash, index, amount, owner required"})
             return
 
+        try:
+            amount = int(amount)
+        except (ValueError, TypeError):
+            self.send_json(400, {"error": "amount must be an integer"})
+            return
+
         if amount <= 0:
             self.send_json(400, {"error": "amount must be positive"})
             return

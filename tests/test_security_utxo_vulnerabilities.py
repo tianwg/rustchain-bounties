@@ -159,7 +159,7 @@ class TestTransactionVulnerabilities(unittest.TestCase):
             os.unlink(self.db_path)
 
     def test_negative_amount_allowed(self):
-        """VULNERABILITY: Negative amounts can be created."""
+        """SECURITY FIX: Negative amounts are now rejected."""
         for i in range(3):
             utxo = UTXO(
                 tx_hash=f"tx_{i}",
@@ -169,18 +169,19 @@ class TestTransactionVulnerabilities(unittest.TestCase):
             )
             self.db.add_utxo(utxo)
 
-        tx = self.db.create_transaction(
-            from_owner="owner",
-            to_owner="recipient",
-            amount=-100,
-            fee=0,
-        )
+        with self.assertRaises(ValueError) as ctx:
+            self.db.create_transaction(
+                from_owner="owner",
+                to_owner="recipient",
+                amount=-100,
+                fee=0,
+            )
 
-        print(f"\n[NEGATIVE_AMOUNT POC]")
-        print(f"  Transaction created with negative amount: {tx}")
+        print(f"\n[NEGATIVE_AMOUNT FIXED]")
+        print(f"  Negative amount rejected: {ctx.exception}")
 
     def test_zero_value_outputs(self):
-        """VULNERABILITY: Zero-value outputs can be created.
+        """SECURITY FIX: Zero-value outputs are now rejected.
 
         This was the previous finding #2179 that was FIXED.
         Let's verify it's still not present.
@@ -193,21 +194,16 @@ class TestTransactionVulnerabilities(unittest.TestCase):
         )
         self.db.add_utxo(utxo)
 
-        tx = self.db.create_transaction(
-            from_owner="sender",
-            to_owner="recipient",
-            amount=0,
-            fee=0,
-        )
+        with self.assertRaises(ValueError) as ctx:
+            self.db.create_transaction(
+                from_owner="sender",
+                to_owner="recipient",
+                amount=0,
+                fee=0,
+            )
 
-        outputs = tx["outputs"]
-        zero_outputs = [o for o in outputs if o.get("amount", 0) == 0]
-
-        print(f"\n[ZERO_OUTPUT POC]")
-        print(f"  Zero-value outputs created: {zero_outputs}")
-
-        self.assertEqual(len(zero_outputs), 0,
-            "Zero-value outputs should be rejected")
+        print(f"\n[ZERO_OUTPUT FIXED]")
+        print(f"  Zero amount rejected: {ctx.exception}")
 
 
 if __name__ == "__main__":

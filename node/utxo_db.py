@@ -59,6 +59,8 @@ class UTXODatabase:
 
     def add_utxo(self, utxo: UTXO) -> int:
         """Add a new UTXO to the database."""
+        if utxo.amount <= 0:
+            raise ValueError("UTXO amount must be positive")
         conn = self._connect()
         cur = conn.execute(
             """INSERT INTO utxo (tx_hash, indexnum, amount, owner, script_type, spent)
@@ -117,8 +119,13 @@ class UTXODatabase:
     ) -> Dict[str, Any]:
         """Create a new transaction.
 
-        VULNERABLE: No double-spend check, no race condition protection.
+        FIXED: Validate amount and fee are positive.
         """
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        if fee < 0:
+            raise ValueError("Fee must be non-negative")
+
         conn = self._connect()
 
         available = conn.execute(
@@ -147,6 +154,9 @@ class UTXODatabase:
         change = input_sum - amount - fee
         if change > 0:
             outputs.append({"owner": from_owner, "amount": change})
+        elif change < 0:
+            conn.close()
+            raise ValueError("Insufficient funds")
 
         tx_data = {
             "inputs": inputs,
