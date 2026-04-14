@@ -189,6 +189,9 @@ class UTXODatabase:
         outputs: List[Dict],
     ) -> None:
         """Add a transaction and create new UTXOs."""
+        if not outputs:
+            raise ValueError("Transaction must have at least one output")
+
         conn = self._connect()
 
         for inp in inputs:
