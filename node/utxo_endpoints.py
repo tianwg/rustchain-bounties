@@ -60,9 +60,14 @@ class UTXORequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
+    MAX_BODY_SIZE = 1024 * 1024
+
     def read_json_body(self) -> Optional[Dict]:
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
+            return None
+        if length > self.MAX_BODY_SIZE:
+            self.send_error(413, "Request body too large")
             return None
         try:
             return json.loads(self.rfile.read(length))

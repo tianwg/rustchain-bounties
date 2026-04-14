@@ -115,13 +115,15 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
-    def read_json_body(self) -> Optional[Dict]:
-        """Read JSON request body.
+    MAX_BODY_SIZE = 1024 * 1024
 
-        VULNERABLE: No size limit.
-        """
+    def read_json_body(self) -> Optional[Dict]:
+        """Read JSON request body with size limit."""
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
+            return None
+        if length > self.MAX_BODY_SIZE:
+            self.send_error(413, "Request body too large")
             return None
 
         try:
